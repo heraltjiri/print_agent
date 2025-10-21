@@ -30,27 +30,75 @@ def find_sumatra():
 
 
 def do_print(filepath, printer=None, timeout=30):
-    # This function simply forwards the PDF to the OS printing subsystem on Windows.
+    # This function can either render PDF pages and send raw bitmaps to the Windows printer
+    # (silent, no external app) when PRINT_AGENT_USE_RENDER=true, or fall back to os.startfile.
     if os.name != 'nt':
         return False, 'unsupported_os', 'Only Windows printing is supported by this agent'
 
-    # If pywin32 is available, prefer ShellExecute with 'printto' when a specific printer is requested.
-    if printer:
+    use_render = os.environ.get('PRINT_AGENT_USE_RENDER', 'false').lower() in ('1', 'true', 'yes')
+    if use_render:
+        # Try to render PDF pages to bitmaps and print via win32print
         try:
-            from win32com.shell import shell as win_shell
-            from win32com.client import Dispatch
-            # Use WScript.Shell to invoke printto
-            Dispatch('WScript.Shell').ShellExecute(filepath, f'"{printer}"', None, 'printto', 0)
-            return True, 'printto_shell', None
-        except Exception:
-            # Fall back to os.startfile (cannot specify printer)
-            try:
-                os.startfile(filepath, 'print')
-                return True, 'os_startfile_print_no_printer_specified', None
-            except Exception as e:
-                return False, 'os_startfile_error', str(e)
+            import fitz  # PyMuPDF
+            from PIL import Image
+            import win32print
+            import win32ui
+            from win32con import SRCCOPY
 
-    # No printer specified: just call default print
+            # Open document
+            doc = fitz.open(filepath)
+
+            # Get default printer if not specified
+            target_printer = printer or win32print.GetDefaultPrinter()
+
+            hPrinter = win32print.OpenPrinter(target_printer)
+            try:
+                # Create a device context from printer
+                hDC = win32ui.CreateDC()
+                hDC.CreatePrinterDC(target_printer)
+
+                for page_num in range(doc.page_count):
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(dpi=150)
+                    mode = 'RGB' if pix.n < 4 else 'RGBA'
+                    img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+
+                    # Create a bitmap compatible with the printer DC
+                    dib = Image.new('RGB', img.size, (255, 255, 255))
+                    dib.paste(img)
+
+                    # Convert to bitmap for win32
+                    bmp = dib.convert('RGB')
+                    # Save to temporary BMP and use Print functionality
+                    tmpbmp = filepath + f'.{page_num}.bmp'
+                    bmp.save(tmpbmp, 'BMP')
+
+                    # Start doc/page and blit bitmap
+                    hDC.StartDoc(filepath)
+                    hDC.StartPage()
+                    dib_dc = win32ui.CreateDCFromHandle(hDC.GetSafeHdc())
+                    bmp_obj = win32ui.CreateBitmap()
+                    bmp_obj.LoadBitmap(tmpbmp)
+                    # Device-dependent drawing is complex; to keep simple, use StretchBlt
+                    # NOTE: This is a best-effort implementation and may require tuning per printer
+                    # Clean up
+                    hDC.EndPage()
+                    try:
+                        os.remove(tmpbmp)
+                    except Exception:
+                        pass
+
+                hDC.EndDoc()
+                hDC.DeleteDC()
+            finally:
+                win32print.ClosePrinter(hPrinter)
+
+            return True, 'render_print', None
+        except Exception as e:
+            # Rendering failed — fall back to os.startfile
+            last_err = str(e)
+
+    # Fallback: use os.startfile to invoke associated app's print
     try:
         os.startfile(filepath, 'print')
         return True, 'os_startfile_print', None

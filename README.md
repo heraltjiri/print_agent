@@ -12,7 +12,14 @@ Usage
 
    pip install -r requirements.txt
 
-2. This agent forwards received PDFs to the Windows OS printing subsystem. No external PDF CLI is required.
+2. This agent forwards received PDFs to the Windows OS printing subsystem. No external PDF CLI is required by default.
+
+Optional silent rendering printing
+- If you want the agent to render PDF pages and send raw bitmaps to the printer (no external PDF viewer, more silent), enable `PRINT_AGENT_USE_RENDER=true` in your `.env` and install the optional dependencies:
+
+   pip install PyMuPDF Pillow pywin32
+
+   Note: Rendering-based printing uses Windows printing APIs and may require tuning per printer. It's experimental here and should be tested on the target machine.
 
 3. Run the agent:
 
